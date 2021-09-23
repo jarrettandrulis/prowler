@@ -1,0 +1,84 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: vpc-peering-dns-resolution-check
+
+Parameters:
+  Compliance:
+    AllowedValues: [COMPLIANT, NON_COMPLIANT]
+    Default: COMPLIANT
+    Description: Compliance type of this resource
+    Type: String
+  Domain:
+    Type: String
+    Description: Domain Name
+
+Resources:
+  lambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - route53domains:EnableDomainTransferLock
+                  - route53domains:DisableDomainTransferLock
+                Resource: "*"
+  lambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt lambdaRole.Arn
+      Runtime: python3.6
+      ReservedConcurrentExecutions: 1
+      Environment:
+        Variables:
+          Domain: !Ref Domain
+          Compliance: !Ref Compliance
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          from botocore.exceptions import ClientError
+          import cfnresponse
+          def handler(event, context):
+              r53_domains_client = boto3.client("route53domains")
+              compliant = os.environ["Compliance"] == "COMPLIANT"
+              domain = os.environ["Domain"]
+              response_data = {}
+              try:
+                  if compliant:
+                      response = r53_domains_client.enable_domain_transfer_lock(
+                        DomainName=domain,
+                      )
+                  else:
+                      response = r53_domains_client.disable_domain_transfer_lock(
+                        DomainName=domain,
+                      )
+              except ClientError as err:
+                  response_data["Data"] = err.response
+                  cfnresponse.send(event, context, cfnresponse.FAILED, response_data, "CustomResourcePhysicalID")
+                  return
+              response_data["Data"] = "Success"
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data, "CustomResourcePhysicalID")
+              return
+  DomainModifier:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt lambdaFunction.Arn
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
